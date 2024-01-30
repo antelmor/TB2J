@@ -285,8 +285,8 @@ def gen_exchange_siesta(
             f"sisl version is {sisl.__version__}, but should be larger than 0.10.0."
         )
     fdf = sisl.get_sile(fdf_fname)
-    geom = fdf.read_geometry()
     H = fdf.read_hamiltonian()
+    geom = H._geometry
     if H.spin.is_colinear:
         print("Reading Siesta hamiltonian: colinear spin.")
         tbmodel_up = SislWrapper(H, spin=0, geom=geom)
