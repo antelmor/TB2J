@@ -39,6 +39,6 @@ def main():
         default="TB2J_results")
 
     args = parser.parse_args()
-    merge(*(args.directories), main_path=args.main_directory, method=args.type.strip().lower(), path=args.output_path)
+    merge(*(args.directories), main_path=args.main_directory, method=args.type.strip().lower(), write_path=args.output_path)
 
 main()
