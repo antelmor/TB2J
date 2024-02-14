@@ -4,10 +4,11 @@ import numpy as np
 from itertools import combinations_with_replacement, product
 from TB2J.io_exchange import SpinIO
 
+u0 = np.zeros(3)
 uy = np.array([0.0, 1.0, 0.0])
 uz = np.array([0.0, 0.0, 1.0])
 
-def get_Jani_coefficients(a):
+def get_Jani_coefficients(a, R=np.eye(3)):
 
     if len(a) == 1:
         u = a
@@ -15,23 +16,27 @@ def get_Jani_coefficients(a):
     else:
         u = a[[0, 0, 1]]
         v = a[[0, 1, 1]]
-        
-    coefficients = np.hstack([u*v, np.roll(u, -1, axis=-1)*v + np.roll(v, -1, axis=-1)*u])
+    
+    ur = u @ R.T
+    vr = v @ R.T
+    coefficients = np.hstack([ur*vr, np.roll(ur, -1, axis=-1)*vr + np.roll(vr, -1, axis=-1)*ur])
 
     return coefficients, u, v
 
 def get_projections(a, b, tol=1e-2):
 
+    projections = np.empty((2, 3))
     if np.linalg.matrix_rank([a, b], tol=tol) == 1:
-        projections = np.empty((2, 3))
         if np.linalg.matrix_rank([a, uy], tol=tol) == 1:
             projections[0] = np.cross(a, uz)
         else:
             projections[0] = np.cross(a, uy)
         projections[1] = np.cross(a, projections[0])
+        projections /= np.linalg.norm(projections, axis=-1).reshape(-1, 1)
     else:
-        projections = np.cross(a, b)
-    projections /= np.linalg.norm(projections, axis=-1).reshape(-1, 1)
+        projections[0] = np.cross(a, b)
+        projections[0] /= np.linalg.norm(projections[0])
+        projections[1] = u0
 
     return projections
 
@@ -43,7 +48,7 @@ class SpinIO_merge(SpinIO):
     def _set_projection_vectors(self):
 
         spinat = self.spinat
-        idx = [i for i in self.index_spin if i >= 0]
+        idx = [self.ind_atoms[i] for i in self.index_spin if i >= 0]
         projv = {}
         for i, j in combinations_with_replacement(range(self.nspin), 2):
             a, b = spinat[idx][[i, j]]
@@ -73,10 +78,7 @@ def read_pickle(path):
     return ret
 
 class Merger():
-    def __init__(self, *paths, main_path=None, method='structure'):
-        if method not in ['structure', 'spin']:
-            raise ValueError(f"Unrecognized method '{method}'. Available options are: 'structure' or 'spin'.")
-        self.method = method
+    def __init__(self, *paths, main_path=None): 
         self.dat = [read_pickle(path) for path in paths]
 
         if main_path is None:
@@ -89,24 +91,21 @@ class Merger():
         
     def _set_projv(self):
 
-        rotated = self.method == 'structure'
-        if rotated:
-            cell = self.main_dat.atoms.cell.array
-            rotated_cells = np.stack(
-                [obj.atoms.cell.array for obj in self.dat], axis=0
-            )
-            R = np.linalg.solve(cell, rotated_cells)
+        cell = self.main_dat.atoms.cell.array
+        rotated_cells = np.stack(
+            [obj.atoms.cell.array for obj in self.dat], axis=0
+        )
+        R = np.linalg.solve(cell, rotated_cells)
+        indices = range(len(self.dat))
 
         proju = {}; projv = {}; coeff_matrix = {}; projectors = {};
         for key in self.main_dat.projv.keys():
             vectors = [obj.projv[key] for obj in self.dat]
-            if rotated:
-                vectors = [(R[i] @ vectors[i].T).T for i in range(len(R))]
-            coefficients, u, v = zip(*[get_Jani_coefficients(p) for p in vectors])
-            projectors[key] = np.stack(vectors)
+            coefficients, u, v = zip(*[get_Jani_coefficients(vectors[i], R=R[i]) for i in indices])
+            projectors[key] = np.vstack([u[i] @ R[i].T for i in indices])
             coeff_matrix[key] = np.vstack(coefficients)
-            proju[key] = u
-            projv[key] = v
+            proju[key] = np.stack(u)
+            projv[key] = np.stack(v)
         
         self.proju = proju
         self.projv = projv
@@ -127,7 +126,7 @@ class Merger():
                 raise KeyError(
                     "Can not find key: %s, Please make sure the three calculations use the same k-mesh and same Rcut."
                     % err)
-            newJani = np.linalg.lstsq(coeff_matrix[i, j], projections, rcond=1e-2)[0]
+            newJani = np.linalg.lstsq(coeff_matrix[i, j], projections, rcond=4e-1)[0]
             Jani_dict[key] = np.array([
                 [newJani[0], newJani[3], newJani[5]],
                 [newJani[3], newJani[1], newJani[4]],
@@ -151,23 +150,23 @@ class Merger():
     def merge_DMI(self):
         dmi_ddict = {}
         if all(obj.has_dmi for obj in self.dat):
-            projectors = self.projectors
+            projectors = self.projectors; proju = self.proju;
             for key in self.main_dat.dmi_ddict.keys():
                 try:
                     R, i, j = key
-                    p = projectors[i, j]
+                    u = proju[i, j]
                     DMI = np.stack([sio.dmi_ddict[key] for sio in self.dat])
-                    projections = np.einsum('nij,nj->ni', p, DMI).flatten()
+                    projections = np.einsum('nmi,ni->nm', u, DMI).flatten()
                 except KeyError as err:
                     raise KeyError(
                         "Can not find key: %s, Please make sure the three calculations use the same k-mesh and same Rcut."
                         % err)
-                newDMI = np.linalg.lstsq(np.vstack(p), projections, rcond=1e-2)[0]
+                newDMI = np.linalg.lstsq(projectors[i, j], projections, rcond=4e-1)[0]
                 dmi_ddict[key] = newDMI
             self.main_dat.dmi_ddict = dmi_ddict
 
-def merge(*paths, main_path=None, method='structure', save=True, write_path='TB2J_results'):
-    m = Merger(*paths, main_path=main_path, method=method)
+def merge(*paths, main_path=None, save=True, write_path='TB2J_results'):
+    m = Merger(*paths, main_path=main_path)
     m.merge_Jiso()
     m.merge_DMI()
     m.merge_Jani()
