@@ -14,14 +14,7 @@ def main():
         type=str,
         nargs="+",
         help="The three directories the TB2J calculations are done. Inside each of them, there should be a TB2J_results directory which contains the magnetic interaction parameter files. e.g. Fe_x Fe_y Fe_z. Alternatively, it could  be the TB2J results directories.",
-    )
-
-    parser.add_argument(
-        "--type",
-        "-T",
-        type=str,
-        help="The type of calculations, either structure of spin, meaning that the three calculations are done by rotating the structure/spin. ",
-    )
+    ) 
     parser.add_argument(
         "--output_path",
         help="The path of the output directory, default is TB2J_results",
@@ -41,5 +34,7 @@ def main():
     #merge2(args.directories, args.type.strip().lower(), path=args.output_path)
     merge(*args.directories, main_path=args.main_path, write_path=args.output_path)
 
+    args = parser.parse_args()
+    merge(*(args.directories), main_path=args.main_path, write_path=args.output_path)
 
 main()
