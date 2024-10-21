@@ -120,7 +120,6 @@ class ExchangeDownfolder(ExchangeIO):
             An exchange tensor with shape (npairs, ninteractions, 3, 3)
         '''
         n = Hk.shape[-1] // 2
-        diag = np.diag_indices(n)
         self.i, self.j = np.triu_indices(n)
 
         self._generate_u_matrix()
@@ -156,16 +155,30 @@ class ExchangeDownfolder(ExchangeIO):
         self._exchange_values[:, :, 6:9] = DMI[:, :, *idmi]
         self._exchange_values[:, :, 9:] = Jani.reshape(Jani.shape[:2] + (9,))
 
-    def _compute_downfolded_H(self, u, **params):
+    def _downfold_matrix(self, Mk, **params):
 
-        Hq = self.Hq(kpoints=self.kpoints, anisotropic=True, u=u)
-        Hr = k_to_R(kpts=self.kpoints, Rlist=self.Rlist, Mk=Hq, kweights=None)
-        model = MagnonWrapper(HR=Hr, Rlist=self.Rlist, atoms=self.atoms)
+        MR = k_to_R(kpts=self.kpoints, Rlist=self.Rlist, Mk=Mk, kweights=None)
+        model = MagnonWrapper(HR=MR, Rlist=self.Rlist, atoms=self.atoms)
 
         wann = MagnonDownfolder(model)
         wann.set_parameters(**params)
         ewf = wann.downfold()
-        H = np.stack([ewf.get_wann_Hk(k) for k in self.kpoints])
+        M = np.stack([ewf.get_wann_Hk(k) for k in self.kpoints])
+
+        return M
+
+    def _compute_downfolded_H(self, u, **params):
+
+        Hq = self.Hq(kpoints=self.kpoints, anisotropic=True, u=u)
+
+        n = Hq.shape[-1] // 2
+        A = self._downfold_matrix(Hq[:, :n, :n], **params)
+        B = self._downfold_matrix(Hq[:, :n, n:], **params)
+
+        H = np.block([
+            [A, B],
+            [B.conj().swapaxes(-1, -2), A[::-1].conj()]
+        ])
 
         return H
 
@@ -186,7 +199,7 @@ class ExchangeDownfolder(ExchangeIO):
             magnetic_sites = [symbol for symbol in self.elements if symbol in self.magnetic_elements]
             nsites = len(magnetic_sites)
             metal_indices = [i for i, element in enumerate(magnetic_sites) if element in metals]
-            selected_basis = metal_indices + [x+nsites for x in metal_indices]
+            selected_basis = metal_indices #+ [x+nsites for x in metal_indices]
             params |= {'nwann': len(selected_basis), 'selected_basis': selected_basis}
 
         self.atoms = self.to_ase()
