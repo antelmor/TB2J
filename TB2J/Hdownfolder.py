@@ -161,7 +161,7 @@ class ExchangeDownfolder(ExchangeIO):
         model = MagnonWrapper(HR=MR, Rlist=self.Rlist, atoms=self.atoms)
 
         wann = MagnonDownfolder(model)
-        wann.set_parameters(**params)
+        wann.set_parameters(kmesh=self.kmesh, **params)
         ewf = wann.downfold()
         M = np.stack([ewf.get_wann_Hk(k) for k in self.kpoints])
 
@@ -174,6 +174,9 @@ class ExchangeDownfolder(ExchangeIO):
         n = Hq.shape[-1] // 2
         A = self._downfold_matrix(Hq[:, :n, :n], **params)
         B = self._downfold_matrix(Hq[:, :n, n:], **params)
+
+        ik = self.kpoints.shape[0] // 2
+        B[:ik] = B[-1:ik:-1].swapaxes(-1, -2)
 
         H = np.block([
             [A, B],
