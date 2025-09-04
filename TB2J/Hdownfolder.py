@@ -184,13 +184,18 @@ class ExchangeDownfolder(ExchangeIO):
         Hji = matrix[..., jdx.T, idx]
         Hjj = matrix[..., jdx.T, jdx]
 
-        eigvals = np.linalg.eigvalsh(matrix)
-        Hjj[..., *diag_indices] -= eigvals.min()
+        nj = len(null_indices)
+        g = np.ones(2*nj)
+        g[nj:] = -1.0
+        M = matrix.copy()
+        M[..., N:, :] *= -1
+        eigvals = np.linalg.eigvalsh(M)
+        Hjj[..., *diag_indices] -= np.abs(eigvals).mean(axis=-1)[..., None]
         correction = np.einsum('...ij,...jk,...kl->...il', Hij, np.linalg.inv(Hjj), Hji)
         
         return Hii - correction
 
-    def downfold(self, metals, **params):
+    def downfold(self, metals, tolerance=1e-6, **params):
 
         try:
             metals = metals.split()
