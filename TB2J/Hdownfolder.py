@@ -170,11 +170,10 @@ class ExchangeDownfolder(ExchangeIO):
         return downfolded_matrix
 
     @staticmethod
-    def lowdin_partition(matrix, indices):
+    def lowdin_partition(matrix, indices, weighted=False):
 
         N = matrix.shape[-1] // 2
         null_indices = np.array([i for i in range(N) if i not in indices])
-        diag_indices = np.diag_indices(2*null_indices.size)
 
         idx = np.concatenate([indices, indices+N])[None, :]
         jdx = np.concatenate([null_indices, null_indices+N])[None, :]
@@ -184,18 +183,49 @@ class ExchangeDownfolder(ExchangeIO):
         Hji = matrix[..., jdx.T, idx]
         Hjj = matrix[..., jdx.T, jdx]
 
-        nj = len(null_indices)
-        g = np.ones(2*nj)
-        g[nj:] = -1.0
-        M = matrix.copy()
-        M[..., N:, :] *= -1
-        eigvals = np.linalg.eigvalsh(M)
-        Hjj[..., *diag_indices] -= np.abs(eigvals).mean(axis=-1)[..., None]
+        if weighted:
+            matrix[..., *np.diag_indices(2*N)] += 1e-7
+            G = np.diag([-1.0 if i < N else 1.0 for i in range(2*N)])
+            K = np.linalg.cholesky(matrix)
+            D = K.conj().swapaxes(-1, -2) @ G @ K
+            w, V = np.linalg.eigh(D)
+            W = (V.conj().swapaxes(-1, -2) @ K.conj().swapaxes(-1, -2)) / np.sqrt(np.abs(w))[..., None]
+            principal_operators = W[..., idx[0]]
+            weights = np.linalg.norm(principal_operators, axis=-1)
+            lowdin_parameter = np.average(np.abs(w), weights=weights, axis=-1)[..., None]
+
+            Nj = len(null_indices)
+            gj = np.array([-1.0 if i < Nj else 1.0 for i in range(2*Nj)])[None]
+            Hjj[..., *np.diag_indices(2*Nj)] -= lowdin_parameter*gj
+
+        eigvals = np.linalg.eigvalsh(matrix)
         correction = np.einsum('...ij,...jk,...kl->...il', Hij, np.linalg.inv(Hjj), Hji)
         
         return Hii - correction
 
-    def downfold(self, metals, tolerance=1e-6, **params):
+    @staticmethod
+    def compute_interaction_norm(matrix, indices):
+
+        N = matrix.shape[-1] // 2
+        null_indices = np.array([i for i in range(N) if i not in indices])
+
+        idx = np.concatenate([indices, indices+N])[None, :]
+        jdx = np.concatenate([null_indices, null_indices+N])[None, :]
+
+        Hii = matrix[..., idx.T, idx]
+        Hij = matrix[..., idx.T, jdx]
+        Hji = matrix[..., jdx.T, idx]
+        Hjj = matrix[..., jdx.T, jdx]
+
+        Hs = np.einsum('...ij,...jk,...kl->...il', Hij, np.linalg.inv(Hjj), Hji)
+        Kjj = np.linalg.cholesky(Hjj)
+        Ks = np.linalg.cholesky(Hs)
+        Fji = np.linalg.inv(Kjj) @ Hji @ np.linalg.inv(Ks)
+        norm = np.linalg.norm(Fji, 2)
+
+        return norm
+
+    def downfold(self, metals, tolerance=1e-6, weighted=False, **params):
 
         try:
             metals = metals.split()
@@ -217,7 +247,7 @@ class ExchangeDownfolder(ExchangeIO):
             ])
 
         Hq = np.stack([self.Hq(self.kpoints, u=u[None, :]) for u in self.reference_axes])
-        downfolded_Hq = self.lowdin_partition(Hq, metal_indices)
+        downfolded_Hq = self.lowdin_partition(Hq, metal_indices, weighted=weighted)
 
         self.set_downfolded_magnetic_sites(metals)
         J = self.compute_exchange_tensor(downfolded_Hq)
